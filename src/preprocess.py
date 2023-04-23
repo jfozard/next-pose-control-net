@@ -316,7 +316,7 @@ def create_openpose_images(input_dir,
                            should_skip_existing=True,
                            start_idx=0,
                            end_idx=-1,
-                           batch_size=8):
+                           batch_size=16):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     openpose_detector = OpenposeDetector()

@@ -59,7 +59,7 @@ class OpenposeDetector:
 #        self.face_estimation = Face(face_modelpath)
 
     def __call__(self, oriImg, hand_and_face=False, return_is_index=False):
-        oriImg = jnp.array(oriImg)[:, :, :, ::-1]
+        oriImg = jnp.array(oriImg, dtype=jnp.float16)[:, :, :, ::-1]
         print(oriImg.shape)
         B, H, W, C = oriImg.shape
         candidates, subsets = self.body_estimation(oriImg)
