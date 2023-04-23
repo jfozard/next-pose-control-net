@@ -6,11 +6,12 @@ import os
 import argparse
 import jsonlines
 import numpy as np
+from tqdm import tqdm
 
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 import torch
 from openpose import OpenposeDetector
-
+from imageio import imread, imwrite
 
 def get_captioning_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -86,6 +87,7 @@ def video_to_frames(input_video,
 
 
     in_file = ffmpeg.input(input_video)
+#    in_file= in_file.trim(start=2, end=5)
     out_file = f"{output_dir}/%010d.png"
 
     print("scaled_width", scaled_width)
@@ -209,8 +211,11 @@ def create_jsonl(image_input_dir,
                  output_file,
                  text="A photo of a person dancing",
                  use_captioning_model=False,
-                 append=False):
+                 append=False,
+                 start_idx=0,
+                 end_idx=-1):
 
+    
     if use_captioning_model:
         captioner = get_captioning_model()
 
@@ -220,7 +225,12 @@ def create_jsonl(image_input_dir,
             if path.is_file() and path.suffix in IMAGE_FILE_EXTENSIONS:
                 input_images.append(path)
         input_images.sort()
-        for prev_image, curr_image in zip(input_images[:-1], input_images[1:]):
+        if end_idx==-1:
+            end_idx = len(input_images)
+        else:
+            end_idx = min(end_idx, len(input_images))
+            
+        for prev_image, curr_image in zip(input_images[start_idx:end_idx-1], input_images[start_idx+1:end_idx]):
             _, tail = os.path.split(curr_image)
             pose_image = os.path.join(pose_input_dir, tail)
 
@@ -234,43 +244,123 @@ def create_jsonl(image_input_dir,
                           'pose_conditioning_image': str(pose_image),
                           })
 
-
+@profile
 def create_openpose_image(input_path,
                           output_path,
+                          pbar=None,
                           openpose_detector=OpenposeDetector(),):
-    source_image = Image.open(input_path)
+    if pbar:
+        pbar.set_description('Loading image ...')
+
+    source_array = imread(input_path)
 
     # convert the source_image to a numpy array
-    source_array = np.array(source_image)
+#    source_array = np.array(source_image)
+    if pbar:
+        pbar.set_description('Run openpose ...')
 
-    pose_array = openpose_detector(source_array,
-                                   hand_and_face=True)
+    pose_array = openpose_detector([source_array],
+                                   hand_and_face=False)[0]
+
+    if pbar:
+        pbar.set_description('Save image ...')
 
     # create an image from the pose_array
-    pose_image = Image.fromarray(pose_array)
-    pose_image.save(output_path)
+ #   pose_image = Image.fromarray(pose_array)
+ #   pose_image.save(output_path)
+    imwrite(output_path, pose_array)
 
-# A function for iterating through a folder of pngs and creating openpose images
+    
+def create_openpose_images_batched(input_paths,
+                          output_paths,
+                          pbar=None,
+                          openpose_detector=OpenposeDetector(),):
+    if pbar:
+        pbar.set_description('Loading image batch ...')
+
+    source_arrays = [imread(input_path) for input_path in input_paths]
+
+    # convert the source_image to a numpy array
+#    source_array = np.array(source_image)
+    if pbar:
+        pbar.set_description('Run openpose ...')
+
+    pose_arrays = openpose_detector(source_arrays,
+                                   hand_and_face=False)
+
+    if pbar:
+        pbar.set_description('Save image ...')
+
+    # create an image from the pose_array
+ #   pose_image = Image.fromarray(pose_array)
+ #   pose_image.save(output_path)
+    for pose_array, output_path in zip(pose_arrays, output_paths):
+        imwrite(output_path, pose_array)
+
+
+from itertools import zip_longest, islice
+"""
+def grouper(iterable, n, fillvalue=None):
+    "Collect data into fixed-length chunks or blocks"
+    # grouper('ABCDEFG', 3, 'x') --> ABC DEF Gxx"
+    args = [iter(iterable)] * n
+    return zip_longest(*args, fillvalue=fillvalue)
+"""
+def grouper(iterable, n):
+    it = iter(iterable)
+    return iter(lambda: tuple(islice(it, n)), ())
 
 
 def create_openpose_images(input_dir,
                            output_dir,
-                           should_skip_existing=True,):
+                           should_skip_existing=True,
+                           start_idx=0,
+                           end_idx=-1,
+                           batch_size=8):
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
     openpose_detector = OpenposeDetector()
 
-    for path in Path(input_dir).iterdir():
-        if path.is_file() and path.suffix in IMAGE_FILE_EXTENSIONS:
-            output_path = f"{output_dir}/{path.name}"
+    
+    paths = [path for path in Path(input_dir).iterdir() if path.is_file() and path.suffix in IMAGE_FILE_EXTENSIONS]
+    print('#', input_dir, len(paths), start_idx, end_idx)
+    paths.sort()
+    if start_idx>len(paths):
+        start_idx=len(paths)
+    if end_idx ==-1:
+        end_idx = len(paths)
+    else:
+        end_idx = min(end_idx, len(paths))
+    print(start_idx, '->', end_idx)
+    paths = paths[start_idx:end_idx]
+    output_paths = [f"{output_dir}/{path.name}" for path in paths ]
+    
+    if should_skip_existing:
+        output_file_not_exists = [not Path(output_path).is_file() for output_path in output_paths]
+        if any(output_file_not_exists):
+            paths, output_paths = zip(*[(path, output_path) for (path, output_path) in zip(paths, output_paths) if not Path(output_path).is_file() ])
+        else:
+            paths, output_paths = [], []
 
-            if should_skip_existing and Path(output_path).is_file():
-                continue
-
+    if batch_size==0:
+        pbar = tqdm(total=len(paths))
+        for path, output_path in zip(paths, output_paths):
             create_openpose_image(path,
-                                  output_path,
-                                  openpose_detector=openpose_detector)
-
+                              output_path,
+                              pbar=pbar,
+                              openpose_detector=openpose_detector)
+            pbar.update(1)
+    else:
+        pbar = tqdm(total=(len(paths)+batch_size-1)//batch_size)
+        print(len(paths), batch_size)
+        for paths, output_paths in zip(grouper(paths, batch_size), grouper(output_paths, batch_size)):
+            
+            create_openpose_images_batched(paths,
+                              output_paths,
+                              pbar=pbar,
+                              openpose_detector=openpose_detector)
+            pbar.update(1)
+            
 
 def runner(input_dir,
            frames_dir,
@@ -284,8 +374,10 @@ def runner(input_dir,
            should_skip_existing=True,
            use_captioning_model=False,
            prompts=None,
+           group_frames=0,
            ):
     # Extract frames from the video
+    """
     video_folder_to_frames(input_dir=input_dir,
                            output_dir=frames_dir,
                            height=height,
@@ -294,27 +386,50 @@ def runner(input_dir,
                            y_offset=y_offset,
                            flip_height_and_width=flip_height_and_width)
 
+    """
     # iterate through each director in the frames_dir and pass the subdirectory to create_openpose_images
-    for path in Path(frames_dir).iterdir():
-        if path.is_dir():
+    # process a small batch from each video before moving to the next
+
+    start_idx = 0
+    video_paths = [path for path in Path(frames_dir).iterdir() if path.is_dir()]
+
+    processing = True
+    while processing:
+        processing = False
+        for path in video_paths:
             this_openpose_dir = f"{openpose_dir}/{path.stem}"
+
+            if group_frames:
+                total_frames = len(list(path.glob('*.png')))
+
+                if start_idx < total_frames:
+                    processing = True
+                    end_idx = min(start_idx + group_frames, total_frames)
+            else:
+                end_idx = -1
+
             create_openpose_images(input_dir=path,
                                    output_dir=this_openpose_dir,
-                                   should_skip_existing=should_skip_existing)
+                                   should_skip_existing=should_skip_existing,
+                                   start_idx=start_idx,
+                                   end_idx=end_idx)
 
             if prompts is not None:
                 this_prompt = prompts[path.stem]
             else:
                 this_prompt = 'A photo of a person dancing'
-
-            # Append to the jsonl file
+                # Append to the jsonl file
             create_jsonl(image_input_dir=path,
                          pose_input_dir=this_openpose_dir,
                          output_file=train_jsonl_file,
                          use_captioning_model=use_captioning_model,
                          append=True,
                          text=this_prompt,
-                         )
+                         start_idx=start_idx,
+                         end_idx=end_idx)
+            
+
+        start_idx += group_frames        
 
 
 if __name__ == "__main__":
@@ -422,6 +537,8 @@ if __name__ == "__main__":
                             help="X offset for cropping (optional)")
     parser_run.add_argument("--y_offset", type=int, default=None,
                             help="Y offset for cropping (optional)")
+    parser_run.add_argument("--group_frames", type=int, default=0,
+                            help="Number of frames of each video to process at once")
 
     args = parser.parse_args()
     print("args: ", args)
@@ -478,6 +595,7 @@ if __name__ == "__main__":
                args.height,
                args.x_offset,
                args.y_offset,
+               group_frames=args.group_frames,
                )
     else:
         parser.print_help()
