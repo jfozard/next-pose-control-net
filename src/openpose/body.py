@@ -166,12 +166,13 @@ class Body(object):
                 paf_avg +=  paf / len(multiplier)
 
 
-
+            # Smooth heatmap (on original image scale)
             one_heatmap = gaussian_filter(heatmap_avg, sigma=3)
 
             max_lr = nn.max_pool(one_heatmap, (3,1), padding="SAME")
             max_ud = nn.max_pool(one_heatmap, (1,3), padding="SAME")
 
+            # Extract local maxima for which smoothed heatmap is above threshold
             peaks_binary = jnp.logical_and(jnp.logical_and( one_heatmap >= max_lr, one_heatmap >=max_ud), one_heatmap > thre1)
 
 
@@ -179,15 +180,14 @@ class Body(object):
 
         self.get_maps = jax.vmap(get_maps)
         
-    @profile
     def __call__(self, oriImg):
         thre2 = 0.05
         bs = oriImg.shape[0]
         print(oriImg.shape)
         res = self.get_maps(oriImg)
-        heatmap_avg = res['heatmap']
-        paf_avg= res['paf']
-        peaks_binary = res['peaks']
+        heatmap_avg = res['heatmap']#.astype(jnp.float32)
+        paf_avg= res['paf']#.astype(jnp.float32)
+        peaks_binary = res['peaks']#.astype(jnp.float32)
         candidates = []
         subsets = []
 
@@ -205,6 +205,8 @@ class Body(object):
         for b in range(bs):
             all_peaks = []
             peak_counter = 0
+            # For each part - find local maxima of smoothed aggregated heatmaps
+            # Add Id, score them according to aggregated heatmap.
             for part in range(18):
                 map_ori = heatmap_avg[b, :, :, part]
                 peaks_list = jnp.nonzero(peaks_binary[b, :, :, part])
@@ -221,6 +223,7 @@ class Body(object):
             special_k = []
             mid_num = 10
 
+            # For each connection in the skeleton, find the potential connections
             for k in range(len(mapIdx)):
                 idxA = mapIdx[k][0] - 19
                 idxB = mapIdx[k][1] - 19
@@ -235,6 +238,7 @@ class Body(object):
                     for i in range(nA):
                         for j in range(nB):
 
+                            # Look at the paf maps along the lines joining the potential peaks
                             vA = jnp.array(candA[i][:2])
                             vB = jnp.array(candB[j][:2])
                             norm, score_midpts = get_line_score(b, vA, vB, paf_avg, idxA, idxB)
@@ -248,6 +252,7 @@ class Body(object):
                                 connection_candidate.append(
                                     [i, j, score_with_dist_prior, score_with_dist_prior + candA[i][2] + candB[j][2]])
 
+                    # 
                     connection_candidate = sorted(connection_candidate, key=lambda x: x[2], reverse=True)
                     connection = np.zeros((0, 5))
                     for c in range(len(connection_candidate)):

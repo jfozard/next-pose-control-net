@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
 import torch
-from openpose import OpenposeDetector
+#from openpose import OpenposeDetector
 from imageio import imread, imwrite
 
 def get_captioning_model():
@@ -87,7 +87,7 @@ def video_to_frames(input_video,
 
 
     in_file = ffmpeg.input(input_video)
-#    in_file= in_file.trim(start=2, end=5)
+    in_file= in_file.trim(start=10, end=70).setpts('PTS-STARTPTS')
     out_file = f"{output_dir}/%010d.png"
 
     print("scaled_width", scaled_width)
@@ -210,15 +210,19 @@ def create_jsonl(image_input_dir,
                  pose_input_dir,
                  output_file,
                  text="A photo of a person dancing",
-                 use_captioning_model=False,
+                 use_captioning_model=True,
+                 captioning_model=None,
                  append=False,
                  start_idx=0,
                  end_idx=-1):
 
-    
-    if use_captioning_model:
-        captioner = get_captioning_model()
 
+    if use_captioning_model:
+        text = None
+        if captioning_model is None:
+            captioning_model = get_captioning_model()
+
+            
     with jsonlines.open(output_file, 'a' if append else 'w') as writer:  #
         input_images = []
         for path in Path(image_input_dir).iterdir():
@@ -234,9 +238,9 @@ def create_jsonl(image_input_dir,
             _, tail = os.path.split(curr_image)
             pose_image = os.path.join(pose_input_dir, tail)
 
-            if use_captioning_model:
+            if use_captioning_model and text is None:
                 text = generate_captions(Image.open(
-                    curr_image), captioner=captioner)
+                    curr_image), captioner=captioning_model)
 
             writer.write({'text': text,
                           'image': str(curr_image),
@@ -244,11 +248,10 @@ def create_jsonl(image_input_dir,
                           'pose_conditioning_image': str(pose_image),
                           })
 
-@profile
 def create_openpose_image(input_path,
                           output_path,
-                          pbar=None,
-                          openpose_detector=OpenposeDetector(),):
+                          pbar=None):
+#                          openpose_detector=OpenposeDetector(),):
     if pbar:
         pbar.set_description('Loading image ...')
 
@@ -273,8 +276,8 @@ def create_openpose_image(input_path,
     
 def create_openpose_images_batched(input_paths,
                           output_paths,
-                          pbar=None,
-                          openpose_detector=OpenposeDetector(),):
+                          pbar=None):#
+#                          openpose_detector=OpenposeDetector(),):
     if pbar:
         pbar.set_description('Loading image batch ...')
 
@@ -372,7 +375,7 @@ def runner(input_dir,
            y_offset,
            flip_height_and_width=False,
            should_skip_existing=True,
-           use_captioning_model=False,
+           use_captioning_model=True,
            prompts=None,
            group_frames=0,
            ):
@@ -393,10 +396,17 @@ def runner(input_dir,
     start_idx = 0
     video_paths = [path for path in Path(frames_dir).iterdir() if path.is_dir()]
 
+    if use_captioning_model:
+        captioning_model = get_captioning_model()
+        print('got captioning model')
+    else:
+        captioning_model = None
+ 
     processing = True
     while processing:
         processing = False
         for path in video_paths:
+            print(path, len(list(path.glob('*.png'))))
             this_openpose_dir = f"{openpose_dir}/{path.stem}"
 
             if group_frames:
@@ -407,13 +417,14 @@ def runner(input_dir,
                     end_idx = min(start_idx + group_frames, total_frames)
             else:
                 end_idx = -1
-
+            """
             create_openpose_images(input_dir=path,
                                    output_dir=this_openpose_dir,
                                    should_skip_existing=should_skip_existing,
                                    start_idx=start_idx,
                                    end_idx=end_idx)
 
+            """
             if prompts is not None:
                 this_prompt = prompts[path.stem]
             else:
@@ -423,12 +434,11 @@ def runner(input_dir,
                          pose_input_dir=this_openpose_dir,
                          output_file=train_jsonl_file,
                          use_captioning_model=use_captioning_model,
+                         captioning_model=captioning_model,
                          append=True,
                          text=this_prompt,
                          start_idx=start_idx,
                          end_idx=end_idx)
-            
-
         start_idx += group_frames        
 
 
